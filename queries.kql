@@ -1,0 +1,116 @@
+// queries.kql
+// -----------------------------------------------------------------------------
+// Reference KQL queries for the DnsProbe_CL custom table.
+//
+// These are the queries used to diagnose intermittent DNS failures with the
+// probe deployed at multiple vantage points (e.g. a laptop on the internet
+// plus an AKS pod inside the customer's VNet). Run from the Log Analytics
+// workspace blade in the portal, or via:
+//
+//   az monitor log-analytics query -w <workspace-customer-id> --analytics-query "<query>"
+//
+// Replace <name1> / <name2> with the actual FQDNs you want to investigate.
+// -----------------------------------------------------------------------------
+
+
+// 1. Are records flowing? Smoke test — should return a row per vantage that
+//    is currently shipping.
+DnsProbe_CL
+| where TimeGenerated > ago(15m)
+| summarize last_seen=max(TimeGenerated), records=count() by vantage
+
+
+// 2. Per-vantage, per-resolver outcome breakdown over a window. This is the
+//    single most informative health query: it tells you whether failures are
+//    concentrated on a specific resolver, vantage, or both.
+DnsProbe_CL
+| where TimeGenerated > ago(15m)
+| where name in ("<name1>", "<name2>")
+| summarize records   = count(),
+            noerror   = countif(rcode == "NOERROR"),
+            nxdomain  = countif(rcode == "NXDOMAIN"),
+            servfail  = countif(rcode == "SERVFAIL"),
+            timeout   = countif(rcode == "TIMEOUT"),
+            exception = countif(rcode == "EXCEPTION"),
+            p50_ms    = percentile(todouble(latency_ms), 50),
+            p95_ms    = percentile(todouble(latency_ms), 95)
+          by vantage, resolver_label
+| order by vantage asc, records desc
+
+
+// 3. Success rate per (vantage, name, resolver). 100% from a known-good vantage
+//    (e.g. laptop on the internet) is the baseline; anything < 100% is signal.
+DnsProbe_CL
+| where TimeGenerated > ago(15m)
+| where name in ("<name1>", "<name2>")
+| summarize records      = count(),
+            success_pct  = round(100.0 * countif(rcode == "NOERROR") / count(), 2)
+          by vantage, name, resolver_label
+| order by vantage asc, success_pct asc
+
+
+// 4. Failure timeline — does the failure rate pulse (transient outages every
+//    N minutes — common with NS cluster failover, CoreDNS pod restart, SNAT
+//    port cycling) or is it flat (steady-state misconfiguration)?
+DnsProbe_CL
+| where TimeGenerated > ago(60m)
+| where vantage == "<vantage>" and resolver_label == "<resolver>"
+| summarize failures = countif(rcode != "NOERROR"),
+            total    = count()
+          by bin(TimeGenerated, 30s)
+| extend pct = round(100.0 * failures / total, 1)
+| render timechart
+
+
+// 5. Answer-set divergence — are different resolvers handing out different IPs?
+//    Useful for spotting stale cache, GSLB / split-horizon issues, anycast
+//    drift, or DNS poisoning.
+DnsProbe_CL
+| where TimeGenerated > ago(15m)
+| where name == "<name>" and rcode == "NOERROR" and rdtype == "A"
+| extend answer_ips = extract_all(@"A (\S+)", tostring(answers))
+| mv-expand answer_ips
+| distinct vantage, resolver_label, tostring(answer_ips)
+| order by vantage asc, resolver_label asc
+
+
+// 6. Latency comparison — slow resolvers can be as bad as failing ones at the
+//    application layer (driver/connection-pool timeouts).
+DnsProbe_CL
+| where TimeGenerated > ago(60m)
+| where rcode == "NOERROR"
+| summarize p50 = percentile(todouble(latency_ms), 50),
+            p95 = percentile(todouble(latency_ms), 95),
+            p99 = percentile(todouble(latency_ms), 99),
+            records = count()
+          by vantage, resolver_label
+| order by p95 desc
+
+
+// 7. Recent failures, raw — last 50 non-NOERROR rows, all detail. The "show
+//    me what's broken right now" query.
+DnsProbe_CL
+| where TimeGenerated > ago(15m)
+| where rcode != "NOERROR" and rcode != "NXDOMAIN"
+| project TimeGenerated, vantage, resolver_label, resolver_ip, name, rdtype, rcode, latency_ms, error
+| order by TimeGenerated desc
+| take 50
+
+
+// 8. AKS pod / in-cluster CoreDNS vs Azure DNS vs public — the "is it
+//    actually the DNS path the customer's app uses" check. Add
+//    --extra-resolver coredns-cluster=<cluster-dns-svc-ip> to the probe
+//    deployed in AKS, then this query separates the three.
+DnsProbe_CL
+| where TimeGenerated > ago(15m)
+| where vantage startswith "aks-"
+| extend tier = case(
+    resolver_label == "coredns-cluster", "1-in-cluster (CoreDNS)",
+    resolver_label == "azure-dns",       "2-azure-dns (168.63.129.16)",
+    resolver_label startswith "auth:",   "3-authoritative",
+    "4-public-recursor")
+| summarize records = count(),
+            success_pct = round(100.0 * countif(rcode == "NOERROR") / count(), 2),
+            p95_ms = percentile(todouble(latency_ms), 95)
+          by tier, vantage
+| order by tier asc
