@@ -1,0 +1,122 @@
+# dns-probe.yaml
+# -----------------------------------------------------------------------------
+# Kubernetes manifest for running the DNS probe inside AKS as one of the
+# vantage points. Uses:
+#
+#   - the container image at docker.io/erjosito/dns-probe:latest
+#   - Azure Workload Identity for token acquisition (no secrets in the cluster)
+#   - the existing UAMI from infra-base.bicep, federated to this Job's
+#     ServiceAccount via infra-aks.bicep
+#
+# Placeholders (must be substituted before kubectl apply):
+#
+#   __UAMI_CLIENT_ID__      Client ID of the UAMI from infra-base.bicep.
+#                           Output `uamiClientId` of that deployment.
+#   __DCE_ENDPOINT__        Data Collection Endpoint URL, e.g.
+#                           https://dce-foo.swedencentral-1.ingest.monitor.azure.com
+#                           Output `dceLogsIngestionEndpoint`.
+#   __DCR_IMMUTABLE_ID__    Data Collection Rule immutable ID (dcr-...).
+#                           Output `dcrImmutableId`.
+#   __VANTAGE__             Vantage-point label baked into every record,
+#                           e.g. "aks-swedencentral".
+#   __NAMES__               Space- or comma-separated FQDNs to probe.
+#
+# Easiest deploy: use the helper script in this folder
+#
+#   pwsh ./k8s/deploy.ps1 -Vantage aks-swedencentral -Names "db.example.com,replica.db.example.com"
+#
+# which substitutes the placeholders from the existing Bicep deployment
+# outputs and runs kubectl apply -f - .
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dns-probe
+  labels:
+    app.kubernetes.io/name: dns-probe-lab
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dns-probe-sa
+  namespace: dns-probe
+  annotations:
+    # This is what Workload Identity uses to know which UAMI to mint tokens for.
+    azure.workload.identity/client-id: "__UAMI_CLIENT_ID__"
+  labels:
+    azure.workload.identity/use: "true"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dns-probe-config
+  namespace: dns-probe
+data:
+  # Endpoint of the DCE deployed by infra-base.bicep
+  LAW_DCE_ENDPOINT: "__DCE_ENDPOINT__"
+  # Immutable ID of the DCR deployed by infra-base.bicep
+  LAW_DCR_IMMUTABLE_ID: "__DCR_IMMUTABLE_ID__"
+  # Stream declared in the DCR; matches the table name
+  LAW_STREAM_NAME: "Custom-DnsProbe_CL"
+  # Probe parameters; override any of these by editing this ConfigMap
+  VANTAGE: "__VANTAGE__"
+  DNS_PROBE_NAMES: "__NAMES__"
+  DNS_PROBE_RTYPES: "A AAAA"
+  DNS_PROBE_INTERVAL: "30"
+  DNS_PROBE_DURATION: "0"           # 0 = run forever
+  DNS_PROBE_SUMMARY_INTERVAL: "600"
+  DNS_PROBE_LOG_FILE: "-"           # stdout, so kubectl logs sees it too
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dns-probe
+  namespace: dns-probe
+  labels:
+    app: dns-probe
+spec:
+  ttlSecondsAfterFinished: 604800   # auto-delete pod 7 days after completion
+  backoffLimit: 0                   # no retries — surface failures clearly
+  template:
+    metadata:
+      labels:
+        app: dns-probe
+        # Required label for Azure Workload Identity to inject the projected
+        # service-account token + the AZURE_* env vars the SDK looks for.
+        azure.workload.identity/use: "true"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: dns-probe-sa
+      nodeSelector:
+        kubernetes.io/os: linux
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: probe
+          image: docker.io/erjosito/dns-probe:latest
+          imagePullPolicy: Always
+          # Override the image ENTRYPOINT + CMD so the probe runs with no CLI
+          # args and is driven entirely by env vars from the ConfigMap above.
+          # (The image default CMD is "--help" for ergonomic `docker run`; we
+          # can't pass args:[] here because k8s strips empty lists.)
+          command: ["python", "/opt/probe/dns_probe.py"]
+          envFrom:
+            - configMapRef:
+                name: dns-probe-config
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

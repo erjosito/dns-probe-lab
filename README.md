@@ -21,8 +21,11 @@ points hitting multiple resolvers over time. That's what this is.
 | `probe/Dockerfile` | Container image (`python:3.12-slim`, non-root, pinned deps). |
 | `probe/requirements.txt` | Pinned Python dependencies. |
 | `infra/infra-base.bicep` | Log Analytics Workspace, custom table `DnsProbe_CL`, Data Collection Endpoint, Data Collection Rule, user-assigned managed identity with `Monitoring Metrics Publisher` on the DCR. |
+| `infra/infra-aks.bicep` | AKS cluster (OIDC + Workload Identity enabled) plus federated identity credential linking the UAMI to the probe's Kubernetes ServiceAccount. |
 | `infra/workbook.bicep` | Azure Monitor Workbook deployment (loads the JSON from `workbook/`). |
 | `workbook/dns-probe-workbook.json` | DNS Probe Diagnostics workbook content. Edit this file to iterate on visualizations; redeploy via `workbook.bicep`. |
+| `k8s/dns-probe.yaml` | Kubernetes manifest: Namespace, ServiceAccount (Workload Identity), ConfigMap, Job. Has placeholders that `deploy.ps1` substitutes. |
+| `k8s/deploy.ps1` | Helper that reads the Bicep deployment outputs and renders + applies the manifest. |
 | `k8s/dns-probe-job.yaml` | Kubernetes Job manifest. Pulls the probe image and runs it from inside the affected cluster as one of the vantage points. |
 | `docs/architecture.md` | Architecture overview and rationale (why DCR instead of AMA, why Workload Identity, etc.). |
 
@@ -125,10 +128,29 @@ podman run --rm -it `
 
 ### 4. Run an AKS vantage point
 
-See [`k8s/dns-probe-job.yaml`](./k8s/dns-probe-job.yaml). Requires AKS with OIDC issuer +
-Workload Identity enabled, and a federated identity credential linking the UAMI created by
-the Bicep to the Job's ServiceAccount. Every probe parameter (FQDNs, interval, resolvers,
-DCR target) is configured via env vars on the pod — no image rebuild needed to retarget.
+Deploy the AKS cluster (creates a small lab cluster with OIDC + Workload Identity
+enabled and the federated identity credential linking the UAMI to the probe's
+Kubernetes ServiceAccount):
+
+```powershell
+az deployment group create -g rg-dns-probe-lab -f infra/infra-aks.bicep `
+    -p uamiName=<uamiName-from-step-1>
+```
+
+Get cluster credentials, then deploy the probe Job (the helper script substitutes
+the placeholders from the existing Bicep outputs):
+
+```powershell
+az aks get-credentials -g rg-dns-probe-lab -n <aksName-from-step-4>
+pwsh ./k8s/deploy.ps1 -Vantage aks-swedencentral -Names "db.example.com,replica.db.example.com"
+
+# Watch:
+kubectl -n dns-probe logs -f job/dns-probe
+```
+
+The probe ships every record to the same Log Analytics workspace as the laptop
+vantage point, tagged with `vantage=aks-swedencentral`, so you can compare the
+two side by side in the workbook.
 
 ---
 
