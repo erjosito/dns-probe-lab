@@ -184,6 +184,68 @@
     {
       "type": 1,
       "content": {
+        "json": "## Resolution tier health\n\nThe single most useful **\"where does the failure live?\"** view. Each row groups one resolver tier, ordered from inside the customer's environment outward:\n\n| Tier | What it represents | How the probe sees it |\n|---|---|---|\n| **1. In-cluster (CoreDNS)** | What the app's pods use by default (`/etc/resolv.conf`) | `--extra-resolver coredns=<svc-ip>` |\n| **2. Azure DNS (168.63.129.16)** | What CoreDNS forwards to when running on AKS / Azure VMs | Auto-detected on Azure-hosted vantages |\n| **3. Public recursor** | Internet recursive DNS (Cloudflare / Google / Quad9 / ...) | Default set in the probe |\n| **4. Authoritative** | The zone's NS records (queried directly) | Auto-discovered from the SOA |\n\n*This panel intentionally ignores the **Resolver** filter so all tiers are always visible. See the **How to read this workbook** section at the bottom for what each pattern of green / red rows means.*"
+      },
+      "name": "header-tier"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "DnsProbe_CL\n| where ('*' in ({Vantage}) or vantage in~ ({Vantage}))\n| where ('*' in ({Name}) or name in~ ({Name}))\n| where ('*' in ({Rdtype}) or rdtype in~ ({Rdtype}))\n| extend Tier = case(\n    resolver_label startswith 'coredns', '1. In-cluster (CoreDNS)',\n    resolver_label == 'azure-dns',       '2. Azure DNS (168.63.129.16)',\n    resolver_label startswith 'auth:',   '4. Authoritative',\n                                         '3. Public recursor')\n| summarize\n    Total = count(),\n    Success = countif(rcode == 'NOERROR' and answer_count > 0),\n    TIMEOUT = countif(rcode == 'TIMEOUT'),\n    SERVFAIL = countif(rcode == 'SERVFAIL'),\n    EXCEPTION = countif(rcode == 'EXCEPTION'),\n    P50ms = round(percentile(latency_ms, 50), 1),\n    P95ms = round(percentile(latency_ms, 95), 1)\n    by Tier, vantage\n| extend ['Success %'] = iff(Total == 0, 0.0, round(100.0 * todouble(Success) / todouble(Total), 1))\n| project Tier, vantage, Total, ['Success %'], TIMEOUT, SERVFAIL, EXCEPTION, P50ms, P95ms\n| order by Tier asc, vantage asc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "timeContext": {"durationMs": 3600000},
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "Success %",
+              "formatter": 8,
+              "formatOptions": {
+                "min": 0,
+                "max": 100,
+                "palette": "redGreen"
+              },
+              "numberFormat": {
+                "unit": 1,
+                "options": {"style": "decimal", "maximumFractionDigits": 1}
+              }
+            },
+            {
+              "columnMatch": "TIMEOUT",
+              "formatter": 4,
+              "formatOptions": {"palette": "redBright"}
+            },
+            {
+              "columnMatch": "SERVFAIL",
+              "formatter": 4,
+              "formatOptions": {"palette": "redBright"}
+            },
+            {
+              "columnMatch": "EXCEPTION",
+              "formatter": 4,
+              "formatOptions": {"palette": "redBright"}
+            },
+            {
+              "columnMatch": "P95ms",
+              "formatter": 8,
+              "formatOptions": {
+                "min": 0,
+                "max": 4000,
+                "palette": "greenRed"
+              }
+            }
+          ]
+        }
+      },
+      "name": "tier-table"
+    },
+    {
+      "type": 1,
+      "content": {
         "json": "## Failure rate over time\n\nPercentage of probes per (vantage, resolver) that did **not** return a usable answer (i.e. anything other than `NOERROR` with at least one record), bucketed per minute. Spikes that line up across resolvers and vantages indicate an upstream problem; spikes confined to one vantage indicate a local problem."
       },
       "name": "header-failrate"
@@ -270,7 +332,7 @@
     {
       "type": 1,
       "content": {
-        "json": "## Latency p50 / p95 over time\n\nResolvers can be *degraded* (slow but eventually answering) without being *failed*. A p95 climbing into multi-second territory while p50 stays low usually means retransmits / partial timeouts at the recursor."
+        "json": "## Latency p50 / p95 over time\n\nResolvers can be *degraded* (slow but eventually answering) without being *failed*. A p95 climbing into multi-second territory while p50 stays low usually means retransmits / partial timeouts at the recursor.\n\n*This chart shows latency of **responding** queries only (TIMEOUT and EXCEPTION rows are excluded — those belong in the **Failure rate** chart above). Each resolver contributes two series: one p50, one p95.*"
       },
       "name": "header-latency"
     },
@@ -278,7 +340,7 @@
       "type": 3,
       "content": {
         "version": "KqlItem/1.0",
-        "query": "DnsProbe_CL\n| where ('*' in ({Vantage}) or vantage in~ ({Vantage}))\n| where ('*' in ({Name}) or name in~ ({Name}))\n| where ('*' in ({Resolver}) or resolver_label in~ ({Resolver}))\n| where ('*' in ({Rdtype}) or rdtype in~ ({Rdtype}))\n| where isnotnull(latency_ms)\n| summarize\n    p50 = percentile(latency_ms, 50),\n    p95 = percentile(latency_ms, 95)\n    by bin(TimeGenerated, 1m), resolver_label\n| project TimeGenerated, resolver_label, p50, p95\n| order by TimeGenerated asc",
+        "query": "let base = DnsProbe_CL\n| where ('*' in ({Vantage}) or vantage in~ ({Vantage}))\n| where ('*' in ({Name}) or name in~ ({Name}))\n| where ('*' in ({Resolver}) or resolver_label in~ ({Resolver}))\n| where ('*' in ({Rdtype}) or rdtype in~ ({Rdtype}))\n| where rcode !in ('TIMEOUT', 'EXCEPTION') and isnotnull(latency_ms)\n| summarize\n    p50 = percentile(latency_ms, 50),\n    p95 = percentile(latency_ms, 95)\n    by bin(TimeGenerated, 1m), resolver_label;\nunion\n    (base | project TimeGenerated, Series = strcat(resolver_label, ' p50'), ['Latency (ms)'] = todouble(p50)),\n    (base | project TimeGenerated, Series = strcat(resolver_label, ' p95'), ['Latency (ms)'] = todouble(p95))\n| order by TimeGenerated asc",
         "size": 0,
         "queryType": 0,
         "resourceType": "microsoft.operationalinsights/workspaces",
@@ -286,8 +348,10 @@
         "timeContextFromParameter": "TimeRange",
         "visualization": "timechart",
         "chartSettings": {
-          "ySettings": {"label": "Latency (ms)"},
-          "group": "resolver_label"
+          "ySettings": {
+            "min": 0,
+            "label": "Latency (ms)"
+          }
         }
       },
       "name": "latency-timechart"
@@ -362,6 +426,13 @@
         }
       },
       "name": "failures-table"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## How to read this workbook\n\nApply these rules in order. They map *observed pattern* &rarr; *most likely cause* &rarr; *next concrete action*.\n\n**1. Start with the Status overview.** If Success % is 100 across the time window, you are either looking at the wrong window or the failure is not actually DNS &mdash; investigate the application's TCP / TLS path to the target IPs first. Most 'intermittent DNS failure' tickets are misattributed connectivity failures.\n\n**2. Then the Resolution tier health panel.** This is where most diagnoses are made:\n\n| What you see | Most likely cause | Next step |\n|---|---|---|\n| All four tiers at 100 % | DNS is healthy. The app is misattributing a TCP / TLS / route / NSG / firewall failure as a DNS failure. | Capture the application's actual error text and stack trace; check connectivity to the resolved IPs. |\n| Tier 1 (CoreDNS) < 100 %, Tier 2 (Azure DNS) = 100 % | CoreDNS pod-level issue in the cluster (OOM, replica count too low, plugin chain misconfig, restart loop). | `kubectl -n kube-system get pods -l k8s-app=kube-dns` &mdash; check restart counts, logs, recent events. |\n| Tier 1 < 100 % **and** Tier 2 < 100 % at the **same** timestamps | Cluster egress to the Azure backbone is impaired. | Check NSG, Azure Firewall, UDR / route table, peering on the AKS subnet. |\n| Tier 3 (public recursors) < 100 % from an AKS vantage **but** Tiers 1 + 2 = 100 % | Either UDP / 53 SNAT exhaustion on the cluster outbound LB, or the app bypasses CoreDNS and hits public DNS directly. The first case is harmless to a well-behaved app; the second case is the actual bug. | From a failing pod, compare: `dig @<coredns-svc-ip> <name>` vs `dig <name>`. If only the second one fails, the app is bypassing CoreDNS &mdash; fix `nsswitch.conf` / library config, or attach a NAT Gateway to the subnet. |\n| Tier 4 (authoritative) < 100 % from a vantage on the internet | The DNS provider hosting the zone has an issue, or the zone's delegation is broken. | Check registrar, NS records, DS records, and the provider's status page. |\n| Vantages disagree (one fails, another does not) for the same tier | Cause is local to the failing vantage's network path. | Compare resolver IPs, NSGs, UDRs, and firewall rules of the failing vantage. |\n\n**3. Failure rate over time** &mdash; does it *pulse* (transient: CoreDNS pod restart, NS failover, SNAT port cycling every ~4 min) or is it *flat* (steady-state misconfiguration)? A pulsing pattern usually points at a process / resource that recycles; a flat pattern usually points at config.\n\n**4. Answer divergence** &mdash; more than one distinct answer set for the same name in the same 5-minute window means one of: the record was mid-update, the sub-delegation is inconsistent across NSes, or split-brain DNS is in play (internal vs external resolvers returning different IPs).\n\n**5. Recent failures (raw)** &mdash; when nothing above is enough, read the `error` column. The probe surfaces the exact resolver-side string (e.g. *'The DNS query name does not exist'* vs *'The DNS operation timed out'* vs `[Errno -3]`).\n\n---\n\n**Things this workbook deliberately does NOT do**\n\n* It does not store customer-specific narrative. The workbook is a *tool*; customer-facing write-ups belong in a separate document.\n* It does not draw the full delegation chain as a graph. The authoritative-NS hits the probe already records are sufficient to confirm where the chain ends.\n* It does not classify TCP / TLS failures as DNS failures. If Success % is 100 here but your app is failing, the bug is not in DNS &mdash; do not treat a healthy tier 1 + 2 as 'inconclusive'."
+      },
+      "name": "how-to-read"
     }
   ],
   "fallbackResourceIds": [],
