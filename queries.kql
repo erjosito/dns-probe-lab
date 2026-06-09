@@ -4,10 +4,10 @@
 //
 // These are the queries used to diagnose intermittent DNS failures with the
 // probe deployed at multiple vantage points (e.g. a laptop on the internet
-// plus an AKS pod inside the customer's VNet). Run from the Log Analytics
+// plus an AKS pod inside the affected VNet). Run from the Log Analytics
 // workspace blade in the portal, or via:
 //
-//   az monitor log-analytics query -w <workspace-customer-id> --analytics-query "<query>"
+//   az monitor log-analytics query -w <workspace-id> --analytics-query "<query>"
 //
 // Replace <name1> / <name2> with the actual FQDNs you want to investigate.
 // -----------------------------------------------------------------------------
@@ -98,7 +98,7 @@ DnsProbe_CL
 
 
 // 8. AKS pod / in-cluster CoreDNS vs Azure DNS vs public — the "is it
-//    actually the DNS path the customer's app uses" check. Add
+//    actually the DNS path the affected app uses" check. Add
 //    --extra-resolver coredns-cluster=<cluster-dns-svc-ip> to the probe
 //    deployed in AKS, then this query separates the three.
 DnsProbe_CL

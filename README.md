@@ -5,10 +5,10 @@
 > collect comparable telemetry from multiple network locations and pinpoint where in the
 > resolution chain failures originate.
 
-This project grew out of a customer escalation where a managed-database endpoint
-was intermittently returning `SERVFAIL` from inside AKS but resolving fine from a
+This project addresses a recurring DNS pain point: a managed-database endpoint
+that intermittently returns `SERVFAIL` from inside AKS but resolves fine from a
 laptop. The argument *"is it the recursive resolver, or is it the authoritative
-servers?"* could only be settled with side-by-side telemetry from multiple vantage
+servers?"* can only be settled with side-by-side telemetry from multiple vantage
 points hitting multiple resolvers over time. That's what this is.
 
 ---
@@ -109,14 +109,40 @@ A pre-built image is published at `docker.io/erjosito/dns-probe:latest`.
 
 ### 3. Run a laptop vantage point
 
+The simplest path is plain Python — no container build needed.
+
 ```powershell
-# Grant your user Monitoring Metrics Publisher on the DCR (one-time):
+# One-time: install dependencies (in a venv to keep things tidy)
+cd probe
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+
+# One-time: grant your user Monitoring Metrics Publisher on the DCR
 $dcrId = (az deployment group show -g rg-dns-probe-lab -n <deployment-name> --query properties.outputs.dcrId.value -o tsv)
 az role assignment create --assignee (az ad signed-in-user show --query id -o tsv) `
     --role "Monitoring Metrics Publisher" --scope $dcrId
 
+# Run the probe (authenticates via your `az login` token through DefaultAzureCredential)
+$env:VANTAGE = "my-laptop"
+$env:LAW_DCE_ENDPOINT = "https://dce-...ingest.monitor.azure.com"
+$env:LAW_DCR_IMMUTABLE_ID = "dcr-..."
+$env:DNS_PROBE_NAMES = "db.example.com,replica.db.example.com"
+$env:DNS_PROBE_INTERVAL = "15"
+$env:DNS_PROBE_DURATION = "0"    # 0 = run forever; use "1h" for a bounded run
+python dns_probe.py
+```
+
+The probe emits one JSON line per query to stdout and (if the LAW vars are set) ships every record to Log Analytics. Stop with Ctrl+C.
+
+<details>
+<summary>Container alternative (podman / docker)</summary>
+
+If you'd rather run the probe in a container — same image as the AKS vantage uses:
+
+```powershell
 podman run --rm -it `
-  -e VANTAGE=jomore-desktop `
+  -e VANTAGE=my-laptop `
   -e LAW_DCE_ENDPOINT="https://dce-...ingest.monitor.azure.com" `
   -e LAW_DCR_IMMUTABLE_ID="dcr-..." `
   -e DNS_PROBE_NAMES="db.example.com,replica.db.example.com" `
@@ -125,6 +151,10 @@ podman run --rm -it `
   -v "${HOME}/.azure:/home/probe/.azure:ro" `
   docker.io/erjosito/dns-probe:latest
 ```
+
+The volume mount lets `DefaultAzureCredential` reuse your local `az login` token cache. On Windows/WSL2 rootless podman you may need to add `--network=host` if outbound DNS from inside the container is also being investigated; on Linux Docker it Just Works.
+
+</details>
 
 ### 4. Run an AKS vantage point
 
