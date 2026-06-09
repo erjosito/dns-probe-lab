@@ -43,7 +43,7 @@
             "multiSelect": true,
             "quote": "'",
             "delimiter": ",",
-            "value": ["*"],
+            "value": ["value::all"],
             "typeSettings": {
               "additionalResourceOptions": ["value::all"],
               "selectAllValue": "*",
@@ -65,7 +65,7 @@
             "multiSelect": true,
             "quote": "'",
             "delimiter": ",",
-            "value": ["*"],
+            "value": ["value::all"],
             "typeSettings": {
               "additionalResourceOptions": ["value::all"],
               "selectAllValue": "*",
@@ -87,7 +87,7 @@
             "multiSelect": true,
             "quote": "'",
             "delimiter": ",",
-            "value": ["*"],
+            "value": ["value::all"],
             "typeSettings": {
               "additionalResourceOptions": ["value::all"],
               "selectAllValue": "*",
@@ -109,7 +109,7 @@
             "multiSelect": true,
             "quote": "'",
             "delimiter": ",",
-            "value": ["*"],
+            "value": ["value::all"],
             "typeSettings": {
               "additionalResourceOptions": ["value::all"],
               "selectAllValue": "*",
