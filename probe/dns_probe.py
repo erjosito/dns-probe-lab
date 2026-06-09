@@ -396,6 +396,30 @@ def discover_authoritative_ns(
     return out
 
 
+# ---- reachability pre-flight ------------------------------------------------
+
+# Benign well-known name used for the startup reachability check. We don't care
+# about the answer; we only care that the resolver responds at all within the
+# timeout. Has to be a name that virtually any open resolver will answer for.
+_REACHABILITY_QNAME = "cloudflare.com"
+_REACHABILITY_RDTYPE = "A"
+
+
+def is_resolver_reachable(resolver_ip: str, timeout: float = 2.0) -> bool:
+    """Quick reachability probe: send one UDP query, return True if we got any
+    DNS response (regardless of rcode) within `timeout` seconds."""
+    try:
+        q = dns.message.make_query(
+            _REACHABILITY_QNAME,
+            dns.rdatatype.from_text(_REACHABILITY_RDTYPE),
+            use_edns=0,
+        )
+        dns.query.udp(q, resolver_ip, timeout=timeout)
+        return True
+    except Exception:
+        return False
+
+
 # ---- runner -----------------------------------------------------------------
 
 class Probe:
@@ -428,10 +452,35 @@ class Probe:
 
     def build_target_list(self) -> None:
         skip = set(self.args.skip_resolver or [])
+        default_candidates: list[tuple[str, str]] = []
         for label, ip in DEFAULT_RESOLVERS.items():
             if label in skip:
                 continue
-            self.targets.append((label, ip))
+            default_candidates.append((label, ip))
+
+        # Pre-flight reachability check on default resolvers and auth NS only.
+        # User-supplied --extra-resolver entries are always probed (they are
+        # explicit and failures there are signal).
+        #
+        # This filters out:
+        #   - Azure DNS (168.63.129.16) when the probe runs outside Azure
+        #   - IPv6 NS addresses when the probe host has no IPv6 outbound
+        # which would otherwise generate constant EXCEPTION rows.
+        def _admit(label: str, ip: str) -> bool:
+            if not self.args.reachability_check:
+                return True
+            if is_resolver_reachable(ip, timeout=self.args.reachability_timeout):
+                return True
+            sys.stderr.write(
+                f"[init] reachability check FAILED for {label} ({ip}) within "
+                f"{self.args.reachability_timeout}s — skipping. To override, set "
+                f"DNS_PROBE_NO_REACHABILITY_CHECK=1.\n"
+            )
+            return False
+
+        for label, ip in default_candidates:
+            if _admit(label, ip):
+                self.targets.append((label, ip))
 
         for spec in self.args.extra_resolver or []:
             if "=" in spec:
@@ -455,7 +504,8 @@ class Probe:
                     if key in seen:
                         continue
                     seen.add(key)
-                    self.targets.append(key)
+                    if _admit(label, ip):
+                        self.targets.append(key)
 
         sys.stderr.write(f"[init] vantage: {self.args.vantage}\n")
         sys.stderr.write(f"[init] {len(self.targets)} probe targets:\n")
@@ -736,6 +786,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Resolver label to skip from defaults (repeatable). "
                         "e.g. --skip-resolver azure-dns. "
                         "env: DNS_PROBE_SKIP_RESOLVERS, comma-separated.")
+    # Reachability pre-flight: on by default. Drops default + auth-NS targets
+    # that don't answer a benign query within the timeout, so the LAW doesn't
+    # fill up with EXCEPTION rows for unreachable resolvers (e.g. Azure DNS
+    # from outside Azure, or IPv6 NS IPs from an IPv4-only host).
+    p.add_argument("--no-reachability-check", dest="reachability_check",
+                   action="store_false",
+                   default=not _env_bool("DNS_PROBE_NO_REACHABILITY_CHECK", False),
+                   help="Disable the startup reachability check (env: "
+                        "DNS_PROBE_NO_REACHABILITY_CHECK=1). When disabled, all "
+                        "default + auth-NS targets are probed regardless of "
+                        "whether they answered at startup.")
+    p.add_argument("--reachability-timeout", type=float,
+                   default=_env_float("DNS_PROBE_REACHABILITY_TIMEOUT", 2.0),
+                   help="Per-resolver timeout for the startup reachability "
+                        "check, in seconds (env: DNS_PROBE_REACHABILITY_TIMEOUT). "
+                        "Default: 2.0")
     # ---- Log Analytics shipping (optional) ----
     # Note: there is no "workspace ID" parameter — the Log Ingestion API targets
     # a Data Collection Endpoint + Data Collection Rule, not the LAW directly.

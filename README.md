@@ -177,6 +177,8 @@ var > built-in default**.
 | `DNS_PROBE_NO_AUTH_DISCOVERY` | `--no-auth-discovery` | bool | `false` | Skip dynamic authoritative-NS discovery. |
 | `DNS_PROBE_EXTRA_RESOLVERS` | `--extra-resolver` | list of `LABEL=IP` | `[]` | Comma-separated, e.g. `coredns=10.0.0.10,onprem=10.1.2.3`. CLI `--extra-resolver` flags **append** to whatever is in the env var. |
 | `DNS_PROBE_SKIP_RESOLVERS` | `--skip-resolver` | list of labels | `[]` | Drop one or more of the built-in resolvers, e.g. `azure-dns`. CLI flags append. |
+| `DNS_PROBE_NO_REACHABILITY_CHECK` | `--no-reachability-check` | bool | `false` | At startup the probe sends one benign query to each default + authoritative-NS target and drops unreachable ones (e.g. Azure DNS from outside Azure, IPv6 NS IPs from an IPv4-only host) so the workspace isn't flooded with `EXCEPTION` rows. Set this to disable the filter and probe everything. |
+| `DNS_PROBE_REACHABILITY_TIMEOUT` | `--reachability-timeout` | float (seconds) | `2.0` | Per-target timeout for the reachability check. |
 
 ### Log Analytics shipping (optional)
 
