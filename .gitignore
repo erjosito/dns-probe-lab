@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Probe output
+*.jsonl
+*.ndjson
+probe_output/
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Azure / secrets
+*.azureauth
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+
+# Bicep build artifacts
+*.bicep.json
+main.json
+
+# Logs
+*.log

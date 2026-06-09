@@ -1,0 +1,369 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# DNS Probe Diagnostics\n\nMulti-vantage, multi-resolver DNS probe telemetry. Use this workbook to compare how the same name resolves from different vantage points (laptop, AKS pod, Azure VM, ...) against different recursive resolvers and the authoritative nameservers, over time.\n\n**How to use this workbook**\n\n1. Pick a time range that brackets the failure window.\n2. Start with `Vantage = *` and `Resolver = *` to see the whole picture.\n3. Look at the **Failure rate over time** chart first — if all vantages fail simultaneously against all public resolvers, the cause is at or above the authoritative servers (the customer's side). If only one vantage fails, the cause is local to that vantage.\n4. Use **Answer divergence** to spot split-brain DNS (different resolvers returning different IPs for the same name)."
+      },
+      "name": "title"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "p-time",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "label": "Time range",
+            "type": 4,
+            "isRequired": true,
+            "value": {"durationMs": 3600000},
+            "typeSettings": {
+              "selectableValues": [
+                {"durationMs": 900000},
+                {"durationMs": 3600000},
+                {"durationMs": 14400000},
+                {"durationMs": 43200000},
+                {"durationMs": 86400000},
+                {"durationMs": 259200000},
+                {"durationMs": 604800000}
+              ]
+            }
+          },
+          {
+            "id": "p-vantage",
+            "version": "KqlParameterItem/1.0",
+            "name": "Vantage",
+            "label": "Vantage",
+            "type": 2,
+            "isRequired": true,
+            "multiSelect": true,
+            "quote": "'",
+            "delimiter": ",",
+            "value": ["*"],
+            "typeSettings": {
+              "additionalResourceOptions": ["value::all"],
+              "selectAllValue": "*",
+              "showDefault": false
+            },
+            "query": "DnsProbe_CL | distinct vantage | order by vantage asc",
+            "queryType": 0,
+            "resourceType": "microsoft.operationalinsights/workspaces",
+            "timeContext": {"durationMs": 86400000},
+            "timeContextFromParameter": "TimeRange"
+          },
+          {
+            "id": "p-name",
+            "version": "KqlParameterItem/1.0",
+            "name": "Name",
+            "label": "FQDN",
+            "type": 2,
+            "isRequired": true,
+            "multiSelect": true,
+            "quote": "'",
+            "delimiter": ",",
+            "value": ["*"],
+            "typeSettings": {
+              "additionalResourceOptions": ["value::all"],
+              "selectAllValue": "*",
+              "showDefault": false
+            },
+            "query": "DnsProbe_CL | distinct name | order by name asc",
+            "queryType": 0,
+            "resourceType": "microsoft.operationalinsights/workspaces",
+            "timeContext": {"durationMs": 86400000},
+            "timeContextFromParameter": "TimeRange"
+          },
+          {
+            "id": "p-resolver",
+            "version": "KqlParameterItem/1.0",
+            "name": "Resolver",
+            "label": "Resolver",
+            "type": 2,
+            "isRequired": true,
+            "multiSelect": true,
+            "quote": "'",
+            "delimiter": ",",
+            "value": ["*"],
+            "typeSettings": {
+              "additionalResourceOptions": ["value::all"],
+              "selectAllValue": "*",
+              "showDefault": false
+            },
+            "query": "DnsProbe_CL | distinct resolver_label | order by resolver_label asc",
+            "queryType": 0,
+            "resourceType": "microsoft.operationalinsights/workspaces",
+            "timeContext": {"durationMs": 86400000},
+            "timeContextFromParameter": "TimeRange"
+          },
+          {
+            "id": "p-rtype",
+            "version": "KqlParameterItem/1.0",
+            "name": "Rdtype",
+            "label": "Record type",
+            "type": 2,
+            "isRequired": true,
+            "multiSelect": true,
+            "quote": "'",
+            "delimiter": ",",
+            "value": ["*"],
+            "typeSettings": {
+              "additionalResourceOptions": ["value::all"],
+              "selectAllValue": "*",
+              "showDefault": false
+            },
+            "query": "DnsProbe_CL | distinct rdtype | order by rdtype asc",
+            "queryType": 0,
+            "resourceType": "microsoft.operationalinsights/workspaces",
+            "timeContext": {"durationMs": 86400000},
+            "timeContextFromParameter": "TimeRange"
+          }
+        ],
+        "style": "pills",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces"
+      },
+      "name": "parameters"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Status overview"
+      },
+      "name": "header-status"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let filtered = DnsProbe_CL\n| where ('*' in ({Vantage}) or vantage in~ ({Vantage}))\n| where ('*' in ({Name}) or name in~ ({Name}))\n| where ('*' in ({Resolver}) or resolver_label in~ ({Resolver}))\n| where ('*' in ({Rdtype}) or rdtype in~ ({Rdtype}));\nfiltered\n| summarize\n    Queries = count(),\n    Success = countif(rcode == 'NOERROR' and answer_count > 0),\n    NOERROR_empty = countif(rcode == 'NOERROR' and answer_count == 0),\n    SERVFAIL = countif(rcode == 'SERVFAIL'),\n    NXDOMAIN = countif(rcode == 'NXDOMAIN'),\n    REFUSED = countif(rcode == 'REFUSED'),\n    TIMEOUT = countif(rcode == 'TIMEOUT'),\n    EXCEPTION = countif(rcode == 'EXCEPTION'),\n    DistinctVantages = dcount(vantage),\n    DistinctResolvers = dcount(resolver_label),\n    DistinctNames = dcount(name)\n| extend SuccessPct = iff(Queries == 0, 0.0, round(100.0 * todouble(Success) / todouble(Queries), 1))\n| project Queries, ['Success %'] = SuccessPct, Success, SERVFAIL, NXDOMAIN, REFUSED, TIMEOUT, EXCEPTION, NOERROR_empty, ['# vantages'] = DistinctVantages, ['# resolvers'] = DistinctResolvers, ['# names'] = DistinctNames",
+        "size": 4,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "timeContext": {"durationMs": 3600000},
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "Success %",
+              "formatter": 8,
+              "formatOptions": {
+                "min": 0,
+                "max": 100,
+                "palette": "redGreen"
+              },
+              "numberFormat": {
+                "unit": 1,
+                "options": {"style": "decimal", "maximumFractionDigits": 1}
+              }
+            },
+            {
+              "columnMatch": "SERVFAIL",
+              "formatter": 4,
+              "formatOptions": {"palette": "redBright"}
+            },
+            {
+              "columnMatch": "TIMEOUT",
+              "formatter": 4,
+              "formatOptions": {"palette": "redBright"}
+            },
+            {
+              "columnMatch": "EXCEPTION",
+              "formatter": 4,
+              "formatOptions": {"palette": "redBright"}
+            }
+          ]
+        }
+      },
+      "name": "status-table"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Failure rate over time\n\nPercentage of probes per (vantage, resolver) that did **not** return a usable answer (i.e. anything other than `NOERROR` with at least one record), bucketed per minute. Spikes that line up across resolvers and vantages indicate an upstream problem; spikes confined to one vantage indicate a local problem."
+      },
+      "name": "header-failrate"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "DnsProbe_CL\n| where ('*' in ({Vantage}) or vantage in~ ({Vantage}))\n| where ('*' in ({Name}) or name in~ ({Name}))\n| where ('*' in ({Resolver}) or resolver_label in~ ({Resolver}))\n| where ('*' in ({Rdtype}) or rdtype in~ ({Rdtype}))\n| summarize\n    Total = count(),\n    Bad = countif(rcode != 'NOERROR' or answer_count == 0)\n    by bin(TimeGenerated, 1m), Series = strcat(vantage, ' / ', resolver_label)\n| extend ['Failure rate %'] = round(100.0 * todouble(Bad) / todouble(Total), 1)\n| project TimeGenerated, Series, ['Failure rate %']",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "timeContext": {"durationMs": 3600000},
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "timechart",
+        "chartSettings": {
+          "ySettings": {
+            "min": 0,
+            "max": 100,
+            "label": "Failure %"
+          }
+        }
+      },
+      "name": "failrate-timechart"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Health matrix\n\nFor every `(vantage, resolver, name, type)` combination in the selected window: how many probes ran, what % succeeded, and the rcode mix. Sort by **Success %** ascending to find the worst combinations fast."
+      },
+      "name": "header-matrix"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "DnsProbe_CL\n| where ('*' in ({Vantage}) or vantage in~ ({Vantage}))\n| where ('*' in ({Name}) or name in~ ({Name}))\n| where ('*' in ({Resolver}) or resolver_label in~ ({Resolver}))\n| where ('*' in ({Rdtype}) or rdtype in~ ({Rdtype}))\n| summarize\n    Total = count(),\n    Success = countif(rcode == 'NOERROR' and answer_count > 0),\n    SERVFAIL = countif(rcode == 'SERVFAIL'),\n    NXDOMAIN = countif(rcode == 'NXDOMAIN'),\n    TIMEOUT = countif(rcode == 'TIMEOUT'),\n    EXCEPTION = countif(rcode == 'EXCEPTION'),\n    P50ms = round(percentile(latency_ms, 50), 1),\n    P95ms = round(percentile(latency_ms, 95), 1)\n    by vantage, resolver_label, resolver_ip, name, rdtype\n| extend ['Success %'] = iff(Total == 0, 0.0, round(100.0 * todouble(Success) / todouble(Total), 1))\n| project vantage, resolver_label, resolver_ip, name, rdtype, Total, ['Success %'], SERVFAIL, NXDOMAIN, TIMEOUT, EXCEPTION, P50ms, P95ms\n| order by ['Success %'] asc, Total desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "timeContext": {"durationMs": 3600000},
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "Success %",
+              "formatter": 8,
+              "formatOptions": {
+                "min": 0,
+                "max": 100,
+                "palette": "redGreen"
+              }
+            },
+            {
+              "columnMatch": "SERVFAIL",
+              "formatter": 4,
+              "formatOptions": {"palette": "redBright"}
+            },
+            {
+              "columnMatch": "TIMEOUT",
+              "formatter": 4,
+              "formatOptions": {"palette": "redBright"}
+            },
+            {
+              "columnMatch": "EXCEPTION",
+              "formatter": 4,
+              "formatOptions": {"palette": "redBright"}
+            },
+            {
+              "columnMatch": "P95ms",
+              "formatter": 8,
+              "formatOptions": {
+                "min": 0,
+                "max": 4000,
+                "palette": "greenRed"
+              }
+            }
+          ]
+        }
+      },
+      "name": "matrix-table"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Latency p50 / p95 over time\n\nResolvers can be *degraded* (slow but eventually answering) without being *failed*. A p95 climbing into multi-second territory while p50 stays low usually means retransmits / partial timeouts at the recursor."
+      },
+      "name": "header-latency"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "DnsProbe_CL\n| where ('*' in ({Vantage}) or vantage in~ ({Vantage}))\n| where ('*' in ({Name}) or name in~ ({Name}))\n| where ('*' in ({Resolver}) or resolver_label in~ ({Resolver}))\n| where ('*' in ({Rdtype}) or rdtype in~ ({Rdtype}))\n| where isnotnull(latency_ms)\n| summarize\n    p50 = percentile(latency_ms, 50),\n    p95 = percentile(latency_ms, 95)\n    by bin(TimeGenerated, 1m), resolver_label\n| project TimeGenerated, resolver_label, p50, p95\n| order by TimeGenerated asc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "timeContext": {"durationMs": 3600000},
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "timechart",
+        "chartSettings": {
+          "ySettings": {"label": "Latency (ms)"},
+          "group": "resolver_label"
+        }
+      },
+      "name": "latency-timechart"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Answer divergence\n\nFor each name and 5-minute window, the **distinct** sorted answer sets returned by all probed resolvers. More than one row per `(name, window)` means different resolvers were returning **different answers at the same time** — usually because a record was mid-update or a sub-delegation is inconsistent.\n\nA missing row for a `(name, window)` means *no* resolver returned a usable answer in that window."
+      },
+      "name": "header-divergence"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "DnsProbe_CL\n| where ('*' in ({Vantage}) or vantage in~ ({Vantage}))\n| where ('*' in ({Name}) or name in~ ({Name}))\n| where ('*' in ({Resolver}) or resolver_label in~ ({Resolver}))\n| where ('*' in ({Rdtype}) or rdtype in~ ({Rdtype}))\n| where rcode == 'NOERROR' and answer_count > 0\n| extend AnswerSet = tostring(array_sort_asc(answers))\n| summarize\n    SeenBy = make_set(strcat(vantage, ':', resolver_label)),\n    Hits = count()\n    by Window = bin(TimeGenerated, 5m), name, rdtype, AnswerSet\n| order by Window desc, name asc, Hits desc",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "timeContext": {"durationMs": 3600000},
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "table"
+      },
+      "name": "divergence-table"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## Recent failures (raw events)\n\nAll non-`NOERROR` events plus `NOERROR` responses with zero answers, most recent first. Useful for drilling into a single failure: time, vantage, resolver, name, rcode, latency, flags, and the (sometimes informative) error string from the resolver."
+      },
+      "name": "header-failures"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "DnsProbe_CL\n| where ('*' in ({Vantage}) or vantage in~ ({Vantage}))\n| where ('*' in ({Name}) or name in~ ({Name}))\n| where ('*' in ({Resolver}) or resolver_label in~ ({Resolver}))\n| where ('*' in ({Rdtype}) or rdtype in~ ({Rdtype}))\n| where rcode != 'NOERROR' or answer_count == 0\n| project TimeGenerated, vantage, resolver_label, resolver_ip, name, rdtype, rcode, latency_ms, aa_flag, ad_flag, tc_flag, error\n| order by TimeGenerated desc\n| take 200",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "timeContext": {"durationMs": 3600000},
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "rcode",
+              "formatter": 5,
+              "formatOptions": {
+                "thresholdsOptions": "icons",
+                "thresholdsGrid": [
+                  {"operator": "==", "thresholdValue": "NOERROR", "representation": "success", "text": "{0}"},
+                  {"operator": "==", "thresholdValue": "SERVFAIL", "representation": "failed", "text": "{0}"},
+                  {"operator": "==", "thresholdValue": "TIMEOUT", "representation": "stopped", "text": "{0}"},
+                  {"operator": "==", "thresholdValue": "NXDOMAIN", "representation": "warning", "text": "{0}"},
+                  {"operator": "==", "thresholdValue": "REFUSED", "representation": "warning", "text": "{0}"},
+                  {"operator": "==", "thresholdValue": "EXCEPTION", "representation": "failed", "text": "{0}"},
+                  {"operator": "Default", "representation": "info", "text": "{0}"}
+                ]
+              }
+            },
+            {
+              "columnMatch": "latency_ms",
+              "formatter": 8,
+              "formatOptions": {
+                "min": 0,
+                "max": 4000,
+                "palette": "greenRed"
+              }
+            }
+          ]
+        }
+      },
+      "name": "failures-table"
+    }
+  ],
+  "fallbackResourceIds": [],
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}

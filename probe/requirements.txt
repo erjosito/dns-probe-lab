@@ -1,0 +1,7 @@
+# Core probe dependency
+dnspython>=2.6,<3
+
+# Optional: Log Analytics ingestion path (LawShipper class)
+# Required when LAW_DCE_ENDPOINT / LAW_DCR_IMMUTABLE_ID env vars are set.
+azure-identity>=1.17,<2
+azure-monitor-ingestion>=1.0,<2
